@@ -6,7 +6,7 @@ own directory with its own `pyproject.toml` (PEP 621, Python 3.11 or newer):
 | Directory | Distribution | Import package | Holds |
 |---|---|---|---|
 | `lib-archivable/` | `lib-archivable` | `archivable` | The archive machinery: `Archivable`, the `DataManager` base, `LocalDataManager` (SQLAlchemy), `NullDataManager`, `ArchiveReader`, table and enumeration definitions, the archive schema version. No dependency on TENT or VOLTTRON. |
-| `volttron-lib-archivable/` | `volttron-lib-archivable` | `volttron_archivable` | `VolttronDataManager`: a data manager that registers its host's tables with the transactive-node historian over the VOLTTRON message bus and publishes the records. Depends on `lib-archivable` and `volttron-core`. |
+| `volttron-lib-archivable/` | `volttron-lib-archivable` | `volttron_archivable` | `VolttronDataManager`: a data manager that registers its host's tables with the Application Historian over the VOLTTRON message bus and publishes the records. Depends on `lib-archivable` and `volttron-core`. |
 
 Each distribution is installed from its directory:
 
@@ -30,7 +30,7 @@ and `gevent` modules when the real ones are absent).
 - TENT (`code/TENT`) depends on `lib-archivable`: `tent.data_manager` keeps TENT's own things (its archive schema
   version, the definitions and enumerations it ships, `open_archive`) and takes everything else from `archivable`.
 - The TransactiveNodeAgent (`code/TransactiveNodeAgent`) depends on `volttron-lib-archivable` for its data manager.
-- The transactive-node historian (`code/volttron-transactive-node-historian`) still imports `tent.data_manager`; its
+- The Application Historian (`code/volttron-transactive-node-historian`) still imports `tent.data_manager`; its
   migration to `archivable` follows. Until then the historian and a node of the same TENT agree on the archive schema
   through TENT.
 
