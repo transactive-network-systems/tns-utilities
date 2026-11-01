@@ -205,7 +205,7 @@ class Configurable:
                       f'configuration key at all)' if unknown else '')
             raise ReconfigurationError(
                 f'{self.describe(name=getattr(self, "name", None))}: {refused} cannot be changed on a running '
-                f'object{detail}; reconfigurable fields are {sorted(self.Config.reconfigurable_fields())}. '
+                f'component{detail}; reconfigurable fields are {sorted(self.Config.reconfigurable_fields())}. '
                 f'Rebuild it for other changes.')
         current = self.config.model_dump()
         try:
