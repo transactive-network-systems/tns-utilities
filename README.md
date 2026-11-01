@@ -30,9 +30,9 @@ and `gevent` modules when the real ones are absent).
 - TENT (`code/TENT`) depends on `lib-archivable`: `tent.data_manager` keeps TENT's own things (its archive schema
   version, the definitions and enumerations it ships, `open_archive`) and takes everything else from `archivable`.
 - The TransactiveNodeAgent (`code/TransactiveNodeAgent`) depends on `volttron-lib-archivable` for its data manager.
-- The Application Historian (`code/volttron-transactive-node-historian`) still imports `tent.data_manager`; its
-  migration to `archivable` follows. Until then the historian and a node of the same TENT agree on the archive schema
-  through TENT.
+- The Application Historian (`code/volttron-transactive-node-historian`) depends on `lib-archivable` alone: its store
+  is a `LocalDataManager` declared a host of many applications, with one `archive_schema` row per application that
+  registers, and it receives each application's enumerations in the registration payload.
 
 ## The registration payload
 
