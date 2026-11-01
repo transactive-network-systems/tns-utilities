@@ -12,6 +12,7 @@ from sqlalchemy.sql.sqltypes import DateTime, Uuid, Boolean, Float, Time
 
 from archivable.config import ConfigModel, Setting
 from archivable.data_manager import DataManager
+from archivable.encoding import decode_non_finite
 from archivable.helpers import parse_timedelta, require_aware
 from archivable.reader import ArchiveReader
 from archivable.schema import ARCHIVE_SCHEMA_TABLE, archive_schema_definition
@@ -260,6 +261,7 @@ class LocalDataManager(ArchiveReader, DataManager):
     def _normalize_value(column, value):
         if value is None:
             return None
+        value = decode_non_finite(value)  # {"$float": "inf" | "-inf" | "nan"}: a non-finite float that travelled as JSON
         if isinstance(column.type, Boolean):
             if isinstance(value, bool):
                 return value

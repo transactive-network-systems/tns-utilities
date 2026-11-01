@@ -14,12 +14,15 @@ The public API, by concern:
   ``archive_schema_definition``, ``schema_fingerprint``, ``UNVERSIONED``;
 - configuration of configurable classes: ``ConfigModel``, ``Configurable``, ``Setting``, ``ConfigurationError``,
   ``ReconfigurationError``;
+- the JSON form of non-finite floats in records that travel: ``encode_non_finite``, ``decode_non_finite``,
+  ``NON_FINITE_KEY`` (see archivable.encoding);
 - helpers: ``require_aware``, ``parse_timedelta``.
 """
 from archivable.archivable import Archivable
 from archivable.config import ConfigModel, Configurable, ConfigurationError, ReconfigurationError, Setting
 from archivable.data_manager import DataManager
 from archivable.definitions import canonical_definitions_json, definition_differences, parse_table_definition
+from archivable.encoding import NON_FINITE_KEY, decode_non_finite, encode_non_finite
 from archivable.enumerations import (EnumerationRegistry, enumeration_definition, enumeration_definitions,
                                      enumeration_from_definition)
 from archivable.helpers import parse_timedelta, require_aware
@@ -34,4 +37,5 @@ __all__ = ['Archivable', 'ConfigModel', 'Configurable', 'ConfigurationError', 'R
            'parse_table_definition', 'definition_differences', 'canonical_definitions_json',
            'EnumerationRegistry', 'enumeration_definition', 'enumeration_definitions', 'enumeration_from_definition',
            'ARCHIVE_SCHEMA_TABLE', 'UNVERSIONED', 'ArchiveSchema', 'ArchiveSchemaMismatch',
-           'archive_schema_definition', 'schema_fingerprint', 'require_aware', 'parse_timedelta']
+           'archive_schema_definition', 'schema_fingerprint', 'require_aware', 'parse_timedelta',
+           'NON_FINITE_KEY', 'encode_non_finite', 'decode_non_finite']

@@ -15,9 +15,11 @@ interactions:
   seconds have passed; then the error is raised rather than hidden: nothing would be archived in that run and the
   operator must know. An error reply (a rejected table definition) is raised at once; retrying cannot change it.
 - Every batch of records (``archive_data``) is published as a list of ``{"table_name": ..., "data": {...}}`` envelopes
-  under the host's archive publish key, which the historian captures. The host serialises the message (UUIDs and
-  enumeration members as strings, datetimes as ISO 8601, durations as seconds); the historian's LocalDataManager parses
-  the values back by column type.
+  under the host's archive publish key, which the historian captures. Non-finite floats (an inelastic vertex's
+  infinite price, a NaN cost) are replaced by the library's ``{"$float": "inf" | "-inf" | "nan"}`` token first
+  (archivable.encoding), so a host that serialises with standard JSON only can carry them; the host serialises the rest
+  (UUIDs and enumeration members as strings, datetimes as ISO 8601, durations as seconds), and the historian's
+  LocalDataManager parses the values back by column type, the token included.
 
 What the host provides: ``name`` (the publisher name the historian files the registration under), ``vip.rpc.call``,
 ``publish(key, message=...)`` mapping a publish key to a topic, and ``register_subscription(key, callback,
@@ -44,6 +46,7 @@ from gevent.event import AsyncResult
 
 from archivable.config import ConfigModel, Setting
 from archivable.data_manager import DataManager
+from archivable.encoding import encode_non_finite
 
 from volttron.client.vip.agent import errors
 from volttron.utils.jsonrpc import RemoteError
@@ -269,12 +272,14 @@ class VolttronDataManager(DataManager):
         for start in range(0, len(pending), self.max_batch_records):
             chunk = pending[start:start + self.max_batch_records]
             try:
-                self.parent.publish(self.archive_key, message=chunk)
+                # Infinities and NaN become {"$float": ...} tokens: standard JSON carries them, the historian decodes.
+                self.parent.publish(self.archive_key, message=encode_non_finite(chunk))
             except (TypeError, ValueError):
-                # A record that cannot be serialised (a NaN or infinite number, an unknown type) would fail on every
-                # flush; requeueing it would stop the archive for good. Drop the chunk and go on.
-                _log.exception(f'{len(chunk)} archive records cannot be serialised and are dropped: '
-                               f'{sorted({r.get("table_name") for r in chunk if isinstance(r, Mapping)})}')
+                # A record that still cannot be serialised (a value of a type no encoder knows) would fail on every
+                # flush; requeueing it would stop the archive for good. Drop the chunk, naming its records, and go on.
+                named = [f'{r.get("table_name")}({r.get("data", {}).get("id")!r})' if isinstance(r, Mapping) else repr(r)
+                         for r in chunk]
+                _log.exception(f'{len(chunk)} archive records cannot be serialised and are dropped: {named}')
             except Exception:
                 _log.exception(f'Publishing {len(chunk)} archive records failed; they are requeued for the next flush.')
                 self.archival_queue.extendleft(reversed(pending[start:]))

@@ -1,7 +1,9 @@
 """VolttronDataManager against a fake host agent: table registration over RPC or pubsub with the host's definitions,
 enumerations and archive schema version, queueing until the historian is ready, publishing envelopes through the
 host's archive key. Runs without a VOLTTRON platform (tests/conftest.py fakes the bus)."""
+import json
 import logging
+import math
 import uuid
 
 import pytest
@@ -552,6 +554,26 @@ def test_stop_kills_the_flusher_and_flushes_once_more():
     dm.stop()  # idempotent
 
 
+def test_non_finite_floats_are_published_as_tokens_in_standard_json():
+    agent = FakeAgent()
+    dm = ready_dm(agent, max_batch_records=2)
+    original_publish = agent.publish
+
+    def strict_publish(publish_key, message, date_time=None):
+        json.dumps(message, allow_nan=False)  # what a host that refuses non-JSON numbers does
+        original_publish(publish_key, message, date_time)
+    agent.publish = strict_publish
+    dm.archive_data([{'table_name': 'vertex', 'data': {'id': 'a', 'price': math.inf, 'cost': 0.5}},
+                     {'table_name': 'vertex', 'data': {'id': 'b', 'price': 1.0, 'cost': math.nan}},
+                     {'table_name': 'sd_curve', 'data': {'id': 'c', 'costs': [1.0, -math.inf]}}])
+    dm.flush()
+    chunks = agent.records_published()
+    assert [len(c) for c in chunks] == [2, 1] and len(dm.archival_queue) == 0, 'nothing dropped, nothing requeued'
+    assert chunks[0][0]['data'] == {'id': 'a', 'price': {'$float': 'inf'}, 'cost': 0.5}
+    assert chunks[0][1]['data'] == {'id': 'b', 'price': 1.0, 'cost': {'$float': 'nan'}}
+    assert chunks[1][0]['data'] == {'id': 'c', 'costs': [1.0, {'$float': '-inf'}]}
+
+
 def test_unserialisable_records_are_dropped_not_requeued(caplog):
     agent = FakeAgent()
     dm = ready_dm(agent, max_batch_records=2)
@@ -568,3 +590,5 @@ def test_unserialisable_records_are_dropped_not_requeued(caplog):
     assert len(dm.archival_queue) == 0
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert len(errors) == 1 and errors[0].exc_info is not None and 'dropped' in errors[0].getMessage()
+    assert "test_table('bad')" in errors[0].getMessage(), 'the dropped records are named'
+

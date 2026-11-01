@@ -65,8 +65,11 @@ seconds and raised after `rpc_total_timeout`; a rejected registration is raised 
 
 Records are queued and published as lists of `{"table_name": ..., "data": {...}}` envelopes: the backlog when the
 registration succeeds, then everything queued every `publish_interval` seconds, in messages of at most
-`max_batch_records`. A failed publication is logged and its records kept for the next flush; a chunk that cannot be
-serialised is dropped with an error. `stop()` flushes once more and ends the flusher.
+`max_batch_records`. Non-finite floats are published as the library's `{"$float": "inf" | "-inf" | "nan"}` token
+(`archivable.encoding`), so a host that serialises with standard JSON only never drops an inelastic vertex's infinite
+price; the historian's data manager decodes the token. A failed publication is logged and its records kept for the next
+flush; a chunk that still cannot be serialised (a value of an unknown type) is dropped with an error naming its records.
+`stop()` flushes once more and ends the flusher.
 
 ## Tests
 

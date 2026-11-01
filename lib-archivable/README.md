@@ -75,6 +75,15 @@ records or checks each application's row as its registration arrives, returning 
 `schema_version`, `fingerprint` and `application_version` (`ArchiveSchema.PAYLOAD_KEYS`); a payload without
 `application`, `schema_version` or `fingerprint` is a `ValueError`.
 
+## Non-finite floats on the wire
+
+Archive rows carry infinities (an inelastic vertex's price) and NaN (a degenerate curve's cost), which standard JSON
+cannot. A record that travels is passed through `encode_non_finite`, which replaces every non-finite float with
+`{"$float": "inf"}`, `{"$float": "-inf"}` or `{"$float": "nan"}`; `LocalDataManager` decodes the object back into the
+float when it normalises a row, so the Float column holds the infinity. The object form is valid JSON for every parser
+and cannot be mistaken for a text value. SQLite has no NaN and stores it as NULL (a NaN cost reads back as None from
+SQLite, as NaN from PostgreSQL); a manager writing straight to SQLite has always behaved so.
+
 ## Configuration
 
 Data managers are configurable classes: a nested `Config` model (`ConfigModel`, fields declared with `Setting`)
