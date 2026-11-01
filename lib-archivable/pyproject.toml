@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lib-archivable"
+version = "0.1.0"
+description = "Archive records of application objects into a relational database from JSON table definitions."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Pacific Northwest National Laboratory" }]
+dependencies = [
+    "SQLAlchemy>=2.0.0",
+    "pydantic>=2",
+    "uuid6>=2024.7.10",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["archivable"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
