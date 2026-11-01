@@ -41,8 +41,10 @@ A `VolttronDataManager` registers its host's tables with the historian (RPC `cre
 
 ```json
 {"definitions": [table definitions], "enumerations": [{"name": "MarketState", "members": ["Initial", "Active"]}],
- "schema_version": 3}
+ "application": "TENT", "schema_version": 3, "fingerprint": "sha-256 of the application's definitions",
+ "application_version": "3.0.0"}
 ```
 
-The historian registers the enumerations with its data manager (`register_enumerations`), which builds a Python Enum
-for each, then the tables. Enumeration values are stored by member name on both sides.
+The historian keeps one `archive_schema` row per application (`LocalDataManager.register_application`), registers the
+enumerations with its data manager (`register_enumerations`), which builds a Python Enum for each, then the tables.
+Enumeration values are stored by member name on both sides.

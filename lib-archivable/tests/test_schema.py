@@ -105,3 +105,5 @@ def test_archive_schema_definition_is_parseable():
     dm.add_tables([archive_schema_definition()])
     assert {c.name for c in dm.tables[ARCHIVE_SCHEMA_TABLE].columns} == {'version', 'fingerprint', 'application',
                                                                            'application_version', 'created'}
+    assert [c.name for c in dm.tables[ARCHIVE_SCHEMA_TABLE].primary_key.columns] == ['application'], \
+        'one row per application'

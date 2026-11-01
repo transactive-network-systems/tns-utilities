@@ -59,23 +59,24 @@ class VolttronDataManager(DataManager):
     """Archives through the Application Historian on the message bus.
 
     Before anything is archived the host's table definitions are registered with the historian, together with the
-    enumerations they name and the host's archive schema version (the declared ArchiveSchema), by one of two paths
-    selected with `registration`:
+    enumerations they name and the host's archive schema (the declared ArchiveSchema: application, version,
+    fingerprint, application version), by one of two paths selected with `registration`:
 
-    - "rpc" (default): the historian's `create_tables` RPC with
-      `{"definitions": [...], "enumerations": [...], "schema_version": N}`, addressed with `external_platform` when the
-      historian runs on another platform. The call is retried every `rpc_retry_period` seconds until it is answered or
-      `rpc_total_timeout` has passed.
-    - "pubsub": for federations without cross-platform RPC. The definitions are published under the host's
-      `archive_definitions` key as `{"publisher", "request_id", "definitions", "enumerations", "schema_version"}`; the
+    - "rpc" (default): the historian's `create_tables` RPC with `{"definitions": [...], "enumerations": [...],
+      "application", "schema_version", "fingerprint", "application_version"}` (the last four from the declared
+      ArchiveSchema), addressed with `external_platform` when the historian runs on another platform. The call is
+      retried every `rpc_retry_period` seconds until it is answered or `rpc_total_timeout` has passed.
+    - "pubsub": for federations without cross-platform RPC. The same payload is published under the host's
+      `archive_definitions` key with `publisher` (the host's name) and `request_id` beside it; the
       historian answers on the host's status topic (the `archive_status` key, subscribed on all platforms) and the
       answer carrying that request id is awaited for `rpc_timeout` seconds. Without an answer the request is published
       again with a new id every `rpc_retry_period` seconds, and given up after `rpc_total_timeout`.
 
     Both paths yield the same reply: status "success" (archive on), "partial" (archive on; records for the rejected
     tables are dropped, each table reported once) or "error" (raised; nothing is archived). The historian refuses a
-    host whose archive schema version is not its own with an "error" naming both versions; the reply carries the
-    historian's version as `schema_version`, which is logged.
+    host whose archive schema version differs from the one it recorded for the application with an "error" naming
+    both versions; the reply carries the version the historian holds for the application as `schema_version`, which
+    is logged.
 
     Records are never published one by one: archive_data only queues them. Once the archive is on, the start-up backlog
     is published and a flusher greenlet publishes whatever has queued every `publish_interval` seconds, as one message
@@ -138,10 +139,10 @@ class VolttronDataManager(DataManager):
 
     def registration_payload(self) -> dict:
         """What the historian is told: the registered table definitions, the enumerations they name, and the declared
-        archive schema version."""
+        archive schema (application, schema_version, fingerprint, application_version)."""
         return {'definitions': list(self.definitions.values()),
                 'enumerations': self.enumeration_definitions(),
-                'schema_version': self.archive_schema.version}
+                **self.archive_schema.payload()}
 
     def init_archive(self):
         """Register the host's tables with the historian, then release whatever was queued while waiting."""

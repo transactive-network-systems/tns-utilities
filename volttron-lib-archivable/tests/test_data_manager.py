@@ -148,8 +148,9 @@ def test_records_queue_until_tables_are_registered_then_publish_as_one_batch():
 
     peer, method, args, _ = agent.vip.rpc.calls[0]
     assert (peer, method) == ('platform.historian', 'create_tables')
-    assert args[0] == {'definitions': [DEFINITION], 'enumerations': [], 'schema_version': ARCHIVE_SCHEMA_VERSION}, \
-        'the table definitions and enumerations beside the host\'s archive schema version'
+    assert args[0] == {'definitions': [DEFINITION], 'enumerations': [], 'application': 'demo',
+                       'schema_version': ARCHIVE_SCHEMA_VERSION, 'fingerprint': 'f' * 64, 'application_version': '1.0'}, \
+        'the table definitions and enumerations beside the host\'s declared archive schema'
     assert dm.archive_ready
     assert len(agent.published) == 1
     key, batch = agent.published[0]
@@ -172,6 +173,8 @@ def test_registration_states_the_hosts_enumerations_and_needs_a_declared_schema(
     payload = agent.vip.rpc.calls[0][2][0]
     assert payload['enumerations'] == [{'name': 'Colour', 'members': ['Red', 'Blue']}]
     assert payload['schema_version'] == 2 and [d['name'] for d in payload['definitions']] == ['test_table']
+    assert set(payload) == {'definitions', 'enumerations', 'application', 'schema_version', 'fingerprint',
+                            'application_version'}
     dm.stop()
 
     undeclared = VolttronDataManager(FakeAgent(), historian_vip='platform.historian')
@@ -366,6 +369,7 @@ def test_pubsub_success_subscribes_everywhere_publishes_definitions_and_flushes(
     (request,) = agent.definitions_published()
     assert request['publisher'] == 'Campus' and request['definitions'] == [DEFINITION, OTHER]
     assert request['schema_version'] == ARCHIVE_SCHEMA_VERSION and request['enumerations'] == []
+    assert (request['application'], request['fingerprint'], request['application_version']) == ('demo', 'f' * 64, '1.0')
     uuid.UUID(request['request_id'], version=4)
     assert dm.archive_ready and agent.records_published() == [[record('test_table', 'a')]]
     assert dm.pending_request_id is None

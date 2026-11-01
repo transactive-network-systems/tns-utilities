@@ -14,7 +14,7 @@ from enum import Enum
 from sqlalchemy import DateTime, Select, inspect, select
 from sqlalchemy.exc import ArgumentError
 
-from archivable.schema import ARCHIVE_SCHEMA_TABLE, UNVERSIONED, ArchiveSchema
+from archivable.schema import ARCHIVE_SCHEMA_TABLE, UNVERSIONED, ArchiveSchema, archive_schema_definition
 
 _log = logging.getLogger(__name__)
 
@@ -49,19 +49,39 @@ class ArchiveReader:
                              f'not read correctly.')
         return dm
 
-    def archive_schema_record(self) -> dict | None:
-        """The archive_schema row of the database, or None when the database has no archive_schema table or the table
-        is empty: an archive written before the table existed (version 1), or an empty database."""
-        if ARCHIVE_SCHEMA_TABLE not in self.tables or not self.has_table(ARCHIVE_SCHEMA_TABLE):
-            return None
+    def archive_schema_records(self) -> list[dict]:
+        """Every archive_schema row of the database (one per application that writes into it), by application; empty
+        when the database has no archive_schema table (an archive written before the table existed, version 1, or an
+        empty database)."""
+        if ARCHIVE_SCHEMA_TABLE not in self.tables:
+            self.add_tables([archive_schema_definition()])  # the one table every archive shares; readers know it
+        if not self.has_table(ARCHIVE_SCHEMA_TABLE):
+            return []
         table = self.tables[ARCHIVE_SCHEMA_TABLE]
-        rows = self.execute(select(table).order_by(table.c.version.desc()))
-        return rows[0] if rows else None
+        return self.execute(select(table).order_by(table.c.application))
+
+    def archive_schema_record(self, application: str | None = None) -> dict | None:
+        """
+        The archive_schema row of `application`, or None when there is none. Without `application`: the row of the
+        declared schema's application; for a manager without a declared schema (a reader opened without one), the
+        single row of a single-application database, None for an empty one, and a ValueError naming the applications
+        of a database that several applications write into.
+        """
+        if application is None and self.schema_declared:
+            application = self.archive_schema.application
+        records = self.archive_schema_records()
+        if application is not None:
+            return next((record for record in records if record['application'] == application), None)
+        if len(records) > 1:
+            raise ValueError(f'Archive {self.redacted_url!r} holds the tables of several applications '
+                             f'({[r["application"] for r in records]}); name the application whose schema is asked for.')
+        return records[0] if records else None
 
     @property
     def schema_version(self) -> int | None:
-        """The archive schema version the database was written with; None when the database has no archive_schema
-        table, which means version 1 or a database nothing has been written to yet."""
+        """The archive schema version the database was written with (for the declared schema's application, or the
+        single application of the database); None when the database has no archive_schema table or no row for the
+        application, which means version 1 or a database nothing has been written to yet."""
         record = self.archive_schema_record()
         return None if record is None else record['version']
 

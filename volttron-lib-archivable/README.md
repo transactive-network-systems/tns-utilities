@@ -43,12 +43,12 @@ Both paths send the same payload:
 ```json
 {"definitions": [table definitions],
  "enumerations": [{"name": "MarketState", "members": ["Initial", "Active", "..."]}],
- "schema_version": 3}
+ "application": "TENT", "schema_version": 3, "fingerprint": "sha-256 of the definitions", "application_version": "3.0.0"}
 ```
 
-`schema_version` is the version of the host's declared `ArchiveSchema`. The pubsub message adds `publisher` (the
-host's name) and `request_id`; the historian answers on the host's status topic with the same `request_id`. Both paths
-yield the status mapping
+`application`, `schema_version`, `fingerprint` and `application_version` are the host's declared `ArchiveSchema`
+(`ArchiveSchema.payload()`). The pubsub message adds `publisher` (the host's name) and `request_id`; the historian
+answers on the host's status topic with the same `request_id`. Both paths yield the status mapping
 
 ```json
 {"request_id": "...", "publisher": "...", "status": "success | partial | error",
@@ -57,8 +57,8 @@ yield the status mapping
 ```
 
 `success` turns the archive on and publishes the backlog; `partial` does too and drops every record addressed to a
-rejected table (one error log per table); `error` is raised and nothing is archived. A historian of another archive
-schema version answers `error` naming both versions. An unanswered registration is retried every `rpc_retry_period`
+rejected table (one error log per table); `error` is raised and nothing is archived. A historian that recorded another
+archive schema version for the application answers `error` naming both versions. An unanswered registration is retried every `rpc_retry_period`
 seconds and raised after `rpc_total_timeout`; a rejected registration is raised at once.
 
 ## Records

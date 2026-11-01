@@ -51,33 +51,64 @@ class LocalDataManager(ArchiveReader, DataManager):
     def init_archive(self):
         """
         Create the registered tables that are missing and release the queued records. Before creating anything, the
-        archive schema version of the database is checked against the declared one: a database that is new (none of
-        the registered tables exists yet) gets the archive_schema row; a database that already holds the row with the
-        same version is accepted; one with another version, or one that has registered tables but no archive_schema
-        table at all (version 1), raises ArchiveSchemaMismatch naming both versions. Nothing is migrated. Called again
-        after more tables are registered, it creates them and checks the row again.
+        archive schema of the declared application is checked against the database: an application that is new to the
+        database (none of the registered tables exists yet, no archive_schema row for it) gets its archive_schema row;
+        one whose row has the same version is accepted; one with another version, or one that has registered tables
+        but no archive_schema row (version 1), raises ArchiveSchemaMismatch naming both versions. Nothing is migrated.
+        Called again after more tables are registered, it creates them and checks the row again. A multi-application
+        host (declare_multi_application) creates its tables and checks nothing: it registers each application's schema
+        as the application arrives (register_application).
         """
         if self.read_only:
             raise RuntimeError('This data manager was opened for reading (LocalDataManager.from_url); it does not '
                                'create tables.')
-        schema = self.archive_schema  # a host that declared none fails here, before anything is written
+        schema = None if self.hosts_applications else self.archive_schema  # neither declared: fails here
         if ARCHIVE_SCHEMA_TABLE not in self.tables:
             self.add_tables([archive_schema_definition()])
-        present = self.present_tables
-        stored = self.archive_schema_record()
-        new_database = stored is None and not (present & (set(self.tables) - {ARCHIVE_SCHEMA_TABLE}))
-        if not new_database:
-            schema.check(stored, where=f'Archive {self.redacted_url!r}')
+        new_application = False
+        if schema is not None:
+            present = self.present_tables
+            stored = self.archive_schema_record(schema.application)
+            new_application = stored is None and not (present & (set(self.tables) - {ARCHIVE_SCHEMA_TABLE}))
+            if not new_application:
+                schema.check(stored, where=self._where(schema.application))
         self.registry.metadata.create_all(self.engine, checkfirst=True)
-        if new_database:
-            row = schema.row()
-            with Session(self.engine) as session:
-                session.add(self.orm[ARCHIVE_SCHEMA_TABLE](**row))
-                session.commit()
-            _log.info(f'Archive {self.redacted_url!r} created with archive schema version {row["version"]} '
-                      f'({schema.writer}, fingerprint {row["fingerprint"][:12]}).')
+        if new_application:
+            self._write_schema_row(schema)
         self.archive_ready = True
         self.archive_data()
+
+    def _where(self, application: str) -> str:
+        return f'Archive {self.redacted_url!r} (application {application!r})'
+
+    def _write_schema_row(self, schema):
+        row = schema.row()
+        with Session(self.engine) as session:
+            session.add(self.orm[ARCHIVE_SCHEMA_TABLE](**row))
+            session.commit()
+        _log.info(f'Archive {self.redacted_url!r} records archive schema version {row["version"]} for {schema.writer} '
+                  f'(fingerprint {row["fingerprint"][:12]}).')
+
+    def register_application(self, schema) -> str:
+        """
+        For a multi-application host: record or check the archive schema of an application that registers its tables.
+        No row for the application: its row is written and 'new' returned. A row of the same version: 'known' (another
+        fingerprint at the same version is a warning naming the application). A row of another version raises
+        ArchiveSchemaMismatch naming the application and both versions; nothing else in the database is touched. The
+        archive must be open (init_archive).
+        """
+        if not self.hosts_applications:
+            raise RuntimeError(f'{type(self).__name__} is the data manager of one application ('
+                               f'{self.archive_schema.application if self.schema_declared else "undeclared"}); only a '
+                               f'multi-application host registers applications.')
+        if not self.archive_ready or self.read_only:
+            raise RuntimeError('register_application needs an open, writable archive: call init_archive first.')
+        stored = self.archive_schema_record(schema.application)
+        if stored is None:
+            self._write_schema_row(schema)
+            return 'new'
+        schema.check(stored, where=self._where(schema.application))
+        return 'known'
 
     @property
     def redacted_url(self) -> str:

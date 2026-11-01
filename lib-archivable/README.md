@@ -59,11 +59,21 @@ known name with another member list, is an error.
 
 The library has no version of its own. The application numbers its set of definitions (incremented whenever a shipped
 definition or enumeration changes), fingerprints them with `schema_fingerprint(definitions, enumerations)` and
-declares both as an `ArchiveSchema`. `init_archive` writes one row into the `archive_schema` table (`version`,
-`fingerprint`, `application`, `application_version`, `created`) of a new database and refuses an existing database of
-another version with `ArchiveSchemaMismatch` naming both versions; nothing is migrated. A database with tables but no
-`archive_schema` table is version 1 (`UNVERSIONED`). The same version with another fingerprint is a warning: a
+declares both as an `ArchiveSchema(application, version, fingerprint, application_version)`. The `archive_schema`
+table holds one row per application that writes into the database (`application` is the key; `version`,
+`fingerprint`, `application_version`, `created`). `init_archive` writes the application's row when the application is
+new to the database and refuses a database whose row for the application is of another version with
+`ArchiveSchemaMismatch` naming the application and both versions; nothing is migrated. An application whose tables are
+present without its row is version 1 (`UNVERSIONED`). The same version with another fingerprint is a warning: a
 definition changed without a version bump.
+
+A data manager that archives for several applications (a historian) declares no schema of its own:
+`declare_multi_application()` lets `init_archive` open the archive without one, and `register_application(schema)`
+records or checks each application's row as its registration arrives, returning `'new'` or `'known'` and raising
+`ArchiveSchemaMismatch` for another version without touching the other applications. `ArchiveSchema.payload()` and
+`ArchiveSchema.from_payload(mapping)` carry a schema in a registration payload under the keys `application`,
+`schema_version`, `fingerprint` and `application_version` (`ArchiveSchema.PAYLOAD_KEYS`); a payload without
+`application`, `schema_version` or `fingerprint` is a `ValueError`.
 
 ## Configuration
 
@@ -76,7 +86,9 @@ conventions subclass it.
 ## Reading
 
 `LocalDataManager.from_url(url, definitions, enumerations, schema=None, reflect_unknown=True)` opens an archive
-read-only, registers the definitions so types decode, reflects any other table, and reports `schema_version`.
+read-only, registers the definitions so types decode, reflects any other table, and reports `schema_version` (of the
+schema's application, or of the single application of the database; `archive_schema_records()` lists every
+application's row).
 `ArchiveReader` offers `select`, `execute` (lists of dicts, UTC datetimes), `table_chain`, `tables_inheriting` and
 `typed_rows` (rows of a base table with their deepest extension table merged in). Applications add their own queries in
 a subclass.

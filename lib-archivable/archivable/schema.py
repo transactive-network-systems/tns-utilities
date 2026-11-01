@@ -3,9 +3,11 @@ The archive schema version: how a database says which set of table definitions w
 
 The library has no version of its own. The application that owns the definitions numbers them (its archive schema
 version, incremented whenever a shipped definition or enumeration changes), fingerprints them
-(``schema_fingerprint``) and declares both on its data manager as an ``ArchiveSchema`` before ``init_archive``. A new
-database gets one row in the ``archive_schema`` table; an existing database is checked against the declared schema and
-refused (``ArchiveSchemaMismatch``) when its version differs. Nothing is migrated.
+(``schema_fingerprint``) and declares both on its data manager as an ``ArchiveSchema`` before ``init_archive``. The
+``archive_schema`` table holds one row per application that writes into the database: a new application gets its row;
+an application whose row is of another version is refused (``ArchiveSchemaMismatch``). Nothing is migrated. A data
+manager that hosts many applications (a historian) declares none of its own and registers each application's schema as
+it arrives (``LocalDataManager.register_application``).
 
 A database without the table that already holds tables of the application is version 1, the unversioned past.
 """
@@ -29,9 +31,9 @@ def archive_schema_definition() -> dict:
     return {
         'name': ARCHIVE_SCHEMA_TABLE,
         'columns': [
-            {'name': 'version', 'type': 'Integer', 'kwargs': {'primary_key': True}},
-            {'name': 'fingerprint', 'type': 'String', 'type_args': [64]},
-            {'name': 'application', 'type': 'String', 'type_args': [64]},
+            {'name': 'application', 'type': 'String', 'type_args': [64], 'kwargs': {'primary_key': True}},
+            {'name': 'version', 'type': 'Integer', 'kwargs': {'nullable': False}},
+            {'name': 'fingerprint', 'type': 'String', 'type_args': [64], 'kwargs': {'nullable': False}},
             {'name': 'application_version', 'type': 'String', 'type_args': [32]},
             {'name': 'created', 'type': 'DateTime'},
         ],
@@ -80,6 +82,31 @@ class ArchiveSchema:
     @property
     def writer(self) -> str:
         return f'{self.application} {self.application_version}'
+
+    # The keys under which a schema travels in a registration payload, beside the table definitions.
+    PAYLOAD_KEYS = ('application', 'schema_version', 'fingerprint', 'application_version')
+
+    def payload(self) -> dict:
+        """The schema as the keys of a registration payload: application, schema_version, fingerprint,
+        application_version."""
+        return {'application': self.application, 'schema_version': self.version, 'fingerprint': self.fingerprint,
+                'application_version': self.application_version}
+
+    @classmethod
+    def from_payload(cls, payload: Mapping) -> 'ArchiveSchema':
+        """The schema a registration payload states. application, schema_version and fingerprint are required (a
+        ValueError names what is missing or malformed); application_version defaults to 'unknown'."""
+        if not isinstance(payload, Mapping):
+            raise ValueError(f'A registration payload is a mapping, not {type(payload).__name__}.')
+        missing = [key for key in ('application', 'schema_version', 'fingerprint') if payload.get(key) is None]
+        if missing:
+            raise ValueError(f'The registration states no {", ".join(missing)}; a registration carries '
+                             f'{list(cls.PAYLOAD_KEYS)} beside its definitions.')
+        version = payload['schema_version']
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError(f'The registration states archive schema version {version!r}, which is not an integer.')
+        return cls(str(payload['application']), version, str(payload['fingerprint']),
+                   str(payload.get('application_version') or 'unknown'))
 
     def row(self) -> dict:
         """The archive_schema row for a new database: the version, the fingerprint, the application and its version,

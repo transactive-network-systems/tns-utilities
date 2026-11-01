@@ -2,10 +2,11 @@
 The DataManager base: where an application's archive records go.
 
 A data manager is configured by its host (a transactive node, a historian, an agent) and then told, in this order,
-what it will write: ``declare_schema`` (the application's ArchiveSchema), ``register_enumerations`` (the Enum classes
-or wire definitions its tables use), ``add_tables`` (the table definitions), and finally ``init_archive`` which opens
-the archive and releases the records queued so far. ``archive_data`` takes {"table_name", "data"} records at any time;
-before the archive is ready they queue.
+what it will write: ``declare_schema`` (the application's ArchiveSchema) or ``declare_multi_application`` (a host that
+archives for several applications and registers each one's schema as it arrives), ``register_enumerations`` (the Enum
+classes or wire definitions its tables use), ``add_tables`` (the table definitions), and finally ``init_archive`` which
+opens the archive and releases the records queued so far. ``archive_data`` takes {"table_name", "data"} records at any
+time; before the archive is ready they queue.
 """
 import abc
 import logging
@@ -47,24 +48,45 @@ class DataManager(Configurable):
         self.registry = registry()
         self.tables: dict[str, Table] = {}
         self._archive_schema: ArchiveSchema | None = None
+        self._multi_application = False
 
     # ---------------------------------------------------------------- what the host declares
     def declare_schema(self, schema: ArchiveSchema) -> None:
         """Declare the application's archive schema (version, fingerprint, name). Required before init_archive on a
-        manager that owns or reaches a database; declaring a different schema afterwards is an error."""
+        manager that owns or reaches a database for one application; declaring a different schema afterwards is an
+        error, as is declaring one on a multi-application host."""
         if not isinstance(schema, ArchiveSchema):
             raise TypeError(f'declare_schema needs an ArchiveSchema, not {type(schema).__name__}.')
+        if self._multi_application:
+            raise ValueError(f'{type(self).__name__} hosts many applications; it declares no schema of its own. '
+                             f'Register each application with register_application instead.')
         if self._archive_schema is not None and self._archive_schema != schema:
             raise ValueError(f'The archive schema is already declared as {self._archive_schema}; it cannot change to '
                              f'{schema} on a running data manager.')
         self._archive_schema = schema
 
+    def declare_multi_application(self) -> None:
+        """Declare this manager a host of many applications' tables (a historian): it declares no archive schema of
+        its own, opens the archive without one, and records each application's schema as the application registers
+        (LocalDataManager.register_application), one archive_schema row per application."""
+        if self._archive_schema is not None:
+            raise ValueError(f'{type(self).__name__} already declares the schema of {self._archive_schema.application}; '
+                             f'a host of many applications declares none.')
+        self._multi_application = True
+
+    @property
+    def hosts_applications(self) -> bool:
+        """True for a multi-application host (declare_multi_application)."""
+        return self._multi_application
+
     @property
     def archive_schema(self) -> ArchiveSchema:
-        """The declared archive schema; a RuntimeError when the host has not declared one."""
+        """The declared archive schema; a RuntimeError when the host has not declared one (a multi-application host
+        has none: its applications' schemas are in the archive_schema table)."""
         if self._archive_schema is None:
             raise RuntimeError(f'{type(self).__name__} has no archive schema: the host must call '
-                               f'declare_schema(ArchiveSchema(...)) before the archive is opened or registered.')
+                               f'declare_schema(ArchiveSchema(...)) before the archive is opened or registered, or '
+                               f'declare_multi_application() to host the schemas of many applications.')
         return self._archive_schema
 
     @property
