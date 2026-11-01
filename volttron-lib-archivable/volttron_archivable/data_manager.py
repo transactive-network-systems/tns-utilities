@@ -65,12 +65,13 @@ class VolttronDataManager(DataManager):
     enumerations they name and the host's archive schema (the declared ArchiveSchema: application, version,
     fingerprint, application version), by one of two paths selected with `registration`:
 
-    - "rpc" (default): the historian's `create_tables` RPC with `{"definitions": [...], "enumerations": [...],
-      "application", "schema_version", "fingerprint", "application_version"}` (the last four from the declared
-      ArchiveSchema), addressed with `external_platform` when the historian runs on another platform. The call is
+    - "rpc" (default): the historian's `create_tables` RPC with `{"publisher", "definitions": [...],
+      "enumerations": [...], "application", "schema_version", "fingerprint", "application_version"}` (the publisher is
+      the host's name, the last four come from the declared ArchiveSchema), addressed with `external_platform` when the
+      historian runs on another platform. The call is
       retried every `rpc_retry_period` seconds until it is answered or `rpc_total_timeout` has passed.
     - "pubsub": for federations without cross-platform RPC. The same payload is published under the host's
-      `archive_definitions` key with `publisher` (the host's name) and `request_id` beside it; the
+      `archive_definitions` key with a `request_id` beside it; the
       historian answers on the host's status topic (the `archive_status` key, subscribed on all platforms) and the
       answer carrying that request id is awaited for `rpc_timeout` seconds. Without an answer the request is published
       again with a new id every `rpc_retry_period` seconds, and given up after `rpc_total_timeout`.
@@ -141,9 +142,11 @@ class VolttronDataManager(DataManager):
         return self.parent.vip.rpc.call(self.historian_vip, method, *args, **kwargs).get(timeout=self.rpc_timeout)
 
     def registration_payload(self) -> dict:
-        """What the historian is told: the registered table definitions, the enumerations they name, and the declared
-        archive schema (application, schema_version, fingerprint, application_version)."""
-        return {'definitions': list(self.definitions.values()),
+        """What the historian is told: the publisher name the registration is filed under (and which a historian with
+        publisher bindings binds to the caller), the registered table definitions, the enumerations they name, and the
+        declared archive schema (application, schema_version, fingerprint, application_version)."""
+        return {'publisher': self.parent.name,
+                'definitions': list(self.definitions.values()),
                 'enumerations': self.enumeration_definitions(),
                 **self.archive_schema.payload()}
 
@@ -183,7 +186,7 @@ class VolttronDataManager(DataManager):
         request_id = str(uuid4())
         self._pending_request_id = request_id
         self._pending_reply = AsyncResult()
-        self.parent.publish(self.DEFINITIONS_KEY, message={'publisher': self.parent.name, 'request_id': request_id, **payload})
+        self.parent.publish(self.DEFINITIONS_KEY, message={'request_id': request_id, **payload})
         try:
             return self._pending_reply.get(timeout=self.rpc_timeout)
         except gevent.Timeout:

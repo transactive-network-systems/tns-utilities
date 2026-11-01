@@ -150,7 +150,7 @@ def test_records_queue_until_tables_are_registered_then_publish_as_one_batch():
 
     peer, method, args, _ = agent.vip.rpc.calls[0]
     assert (peer, method) == ('platform.historian', 'create_tables')
-    assert args[0] == {'definitions': [DEFINITION], 'enumerations': [], 'application': 'demo',
+    assert args[0] == {'publisher': 'Campus', 'definitions': [DEFINITION], 'enumerations': [], 'application': 'demo',
                        'schema_version': ARCHIVE_SCHEMA_VERSION, 'fingerprint': 'f' * 64, 'application_version': '1.0'}, \
         'the table definitions and enumerations beside the host\'s declared archive schema'
     assert dm.archive_ready
@@ -175,8 +175,9 @@ def test_registration_states_the_hosts_enumerations_and_needs_a_declared_schema(
     payload = agent.vip.rpc.calls[0][2][0]
     assert payload['enumerations'] == [{'name': 'Colour', 'members': ['Red', 'Blue']}]
     assert payload['schema_version'] == 2 and [d['name'] for d in payload['definitions']] == ['test_table']
-    assert set(payload) == {'definitions', 'enumerations', 'application', 'schema_version', 'fingerprint',
+    assert set(payload) == {'publisher', 'definitions', 'enumerations', 'application', 'schema_version', 'fingerprint',
                             'application_version'}
+    assert payload['publisher'] == agent.name, 'the historian files (and may bind) the registration under this name'
     dm.stop()
 
     undeclared = VolttronDataManager(FakeAgent(), historian_vip='platform.historian')
