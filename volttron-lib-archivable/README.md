@@ -7,8 +7,10 @@
 ## What it does
 
 The host agent configures the data manager, declares its archive schema, registers its enumerations and tables, and
-calls `init_archive`. The manager then registers everything with the historian and publishes the records the host
-hands it in batches. It knows nothing about what is archived.
+calls `init_archive`, which starts the registration with the historian in a greenlet of its own and returns at once:
+the host's start-up does not wait for the historian or the federation route. Records the host hands over meanwhile
+queue and go out with the first flush once the historian has answered; from then on they are published in batches. The
+manager knows nothing about what is archived.
 
 What the host provides:
 
@@ -18,6 +20,7 @@ What the host provides:
 | `vip.rpc.call(peer, method, *args, external_platform=...)` | The `create_tables` RPC (registration `rpc`). |
 | `publish(key, message=...)` | Records (key `archive`, configurable) and the registration request (key `archive_definitions`); the host maps keys to topics. |
 | `register_subscription(key, callback, all_platforms=...)` | The historian's answers on key `archive_status` (registration `pubsub`). |
+| `on_archive_unavailable(error)` (optional) | Told when the registration has failed for good: no answer within `rpc_total_timeout`, or an `error` status. The archive is then off for the run and later records are dropped. A host without the hook sees the error raised in the registration greenlet, which the platform logs. |
 
 ## Configuration
 
@@ -28,7 +31,7 @@ The keys are the fields of `VolttronDataManager.Config`:
 | `historian_vip` | required | VIP identity of the Application Historian. |
 | `registration` | `rpc` | `rpc` (the `create_tables` RPC) or `pubsub` (a definitions publication answered on the status topic, for a federation without cross-platform RPC). |
 | `external_platform` | `""` | Platform the historian runs on, for `rpc` in a federation; empty means the local platform. |
-| `rpc_timeout` | `30` | Seconds to wait for one answer. Reconfigurable. |
+| `rpc_timeout` | `30` (`rpc`), `10` (`pubsub`) | Seconds to wait for one answer; the default depends on the registration path. Reconfigurable. |
 | `rpc_retry_period` | `10` | Seconds between registration attempts while unanswered. Reconfigurable. |
 | `rpc_total_timeout` | `300` | Seconds after which an unanswered registration is given up with an error; nothing is archived in that run. Reconfigurable. |
 | `publish_interval` | `1.0` | Seconds between publications of the queued records. Reconfigurable. |
@@ -57,9 +60,11 @@ answers on the host's status topic with the same `request_id`. Both paths yield 
 ```
 
 `success` turns the archive on and publishes the backlog; `partial` does too and drops every record addressed to a
-rejected table (one error log per table); `error` is raised and nothing is archived. A historian that recorded another
-archive schema version for the application answers `error` naming both versions. An unanswered registration is retried every `rpc_retry_period`
-seconds and raised after `rpc_total_timeout`; a rejected registration is raised at once.
+rejected table (one error log per table); `error` turns the archive off for the run and nothing is archived. A historian
+that recorded another archive schema version for the application answers `error` naming both versions. An unanswered
+registration is retried every `rpc_retry_period` seconds and given up after `rpc_total_timeout`. A final failure is
+logged at ERROR and reported to the host through `on_archive_unavailable(error)` (raised in the registration greenlet
+when the host has no such hook).
 
 ## Records
 

@@ -44,6 +44,8 @@ from uuid import uuid4
 import gevent
 from gevent.event import AsyncResult
 
+from pydantic import model_validator
+
 from archivable.config import ConfigModel, Setting
 from archivable.data_manager import DataManager
 from archivable.encoding import encode_non_finite
@@ -76,8 +78,14 @@ class VolttronDataManager(DataManager):
       answer carrying that request id is awaited for `rpc_timeout` seconds. Without an answer the request is published
       again with a new id every `rpc_retry_period` seconds, and given up after `rpc_total_timeout`.
 
-    Both paths yield the same reply: status "success" (archive on), "partial" (archive on; records for the rejected
-    tables are dropped, each table reported once) or "error" (raised; nothing is archived). The historian refuses a
+    init_archive starts the registration in a greenlet of its own and returns at once, so the host's start-up does not
+    wait for the historian or for the federation route to come up; records archived meanwhile queue (archival_queue)
+    and go out with the first flush once the reply is applied. Both paths yield the same reply: status "success"
+    (archive on), "partial" (archive on; records for the rejected tables are dropped, each table reported once) or
+    "error" (nothing is archived). When the registration fails for good (rpc_total_timeout exhausted, an "error" status,
+    an unusable reply) the archive is marked permanently unavailable, later records are dropped, the error is logged,
+    and the host is told through its `on_archive_unavailable(error)` hook; a host without the hook sees the error
+    raised in the registration greenlet (which the platform logs). The historian refuses a
     host whose archive schema version differs from the one it recorded for the application with an "error" naming
     both versions; the reply carries the version the historian holds for the application as `schema_version`, which
     is logged.
@@ -100,8 +108,9 @@ class VolttronDataManager(DataManager):
                                'another platform of a federation without cross-platform RPC).')
         external_platform: str = Setting('', description='Platform the historian runs on, for the rpc path in a '
                                                          'federation; empty means the local platform.')
-        rpc_timeout: float = Setting(30.0, gt=0, reconfigurable=True,
-                                     description='[s] wait for one answer (an RPC reply or a status message).')
+        rpc_timeout: float | None = Setting(None, gt=0, reconfigurable=True,
+                                            description='[s] wait for one answer (an RPC reply or a status message); '
+                                                        'null means 30 for the rpc path and 10 for the pubsub path.')
         rpc_retry_period: float = Setting(10.0, gt=0, reconfigurable=True,
                                           description='[s] between registration attempts while unanswered.')
         rpc_total_timeout: float = Setting(300.0, ge=0, reconfigurable=True,
@@ -112,6 +121,12 @@ class VolttronDataManager(DataManager):
                                          description='Largest number of records in one archive message.')
         archive_key: str = Setting('archive', min_length=1,
                                    description='Publish key the records go out under (the host maps it to a topic).')
+
+        @model_validator(mode='after')
+        def _timeout_for_the_path(self):
+            if self.rpc_timeout is None:
+                self.rpc_timeout = 10.0 if self.registration == 'pubsub' else 30.0
+            return self
 
     def __init__(self, parent, config: ConfigModel | None = None, **kwargs):
         # parent is the host agent; a TENT node passes itself positionally.
@@ -132,6 +147,10 @@ class VolttronDataManager(DataManager):
         self._pending_reply: AsyncResult | None = None
         self._flusher = None          # greenlet publishing the queue every publish_interval once the archive is on
         self._flusher_stopped = False
+        self._registration = None     # greenlet registering the tables; None before init_archive and once settled
+        self.registration_attempts = 0
+        self.archive_unavailable = False   # the registration failed for good: nothing will be archived in this run
+        self._unavailable_reported = False
 
     @property
     def historian_address(self) -> str:
@@ -151,35 +170,64 @@ class VolttronDataManager(DataManager):
                 **self.archive_schema.payload()}
 
     def init_archive(self):
-        """Register the host's tables with the historian, then release whatever was queued while waiting."""
+        """Start registering the host's tables with the historian and return at once. The registration runs in its own
+        greenlet (_register); until it has applied the reply, records queue. A missing archive schema is a defect of
+        the host and raises here, before any attempt."""
         payload = self.registration_payload()  # fails here, before any attempt, when no schema is declared
         _log.info(f'Registering {len(payload["definitions"])} archive tables and {len(payload["enumerations"])} '
                   f'enumerations with historian {self.historian_address!r} by {self.registration}.')
         if self.registration == 'pubsub':
             self.parent.register_subscription(self.STATUS_KEY, self._receive_status, all_platforms=True)
+        self._registration = gevent.spawn(self._register, payload)
+
+    def _register(self, payload: Mapping):
+        """The registration: attempts every rpc_retry_period until answered or rpc_total_timeout has passed, then the
+        reply applied, the backlog flushed and the flusher started. A final failure marks the archive unavailable and
+        tells the host (on_archive_unavailable), or raises when the host has no such hook."""
         deadline = time.monotonic() + self.rpc_total_timeout
         attempt = 0
-        while True:
-            attempt += 1
-            try:
-                if self.registration == 'pubsub':
-                    reply = self._request_registration_by_pubsub(payload)
-                else:
-                    reply = self._call_historian('create_tables', payload)
-                break
-            except TRANSPORT_ERRORS as error:  # unreachable peer, no federation route yet, or no reply in time
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RuntimeError(f'Historian {self.historian_address!r} did not answer the table registration in '
-                                       f'{self.rpc_total_timeout:.0f} s ({attempt} attempts); nothing will be archived '
-                                       f'in this run.') from error
-                _log.error(f'Table registration with historian {self.historian_address!r} failed (attempt {attempt}: '
-                           f'{error!r}); retrying in {self.rpc_retry_period:.0f} s for up to {remaining:.0f} s more.')
-                gevent.sleep(self.rpc_retry_period)
-        self._apply_registration_reply(reply, attempt)
+        try:
+            while True:
+                attempt += 1
+                self.registration_attempts = attempt
+                try:
+                    if self.registration == 'pubsub':
+                        reply = self._request_registration_by_pubsub(payload)
+                    else:
+                        reply = self._call_historian('create_tables', payload)
+                    break
+                except TRANSPORT_ERRORS as error:  # unreachable peer, no federation route yet, or no reply in time
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError(f'Historian {self.historian_address!r} did not answer the table registration '
+                                           f'in {self.rpc_total_timeout:.0f} s ({attempt} attempts); nothing will be '
+                                           f'archived in this run.') from error
+                    _log.error(f'Table registration with historian {self.historian_address!r} failed (attempt {attempt}: '
+                               f'{error!r}); retrying in {self.rpc_retry_period:.0f} s for up to {remaining:.0f} s more.')
+                    gevent.sleep(self.rpc_retry_period)
+            self._apply_registration_reply(reply, attempt)
+        except Exception as error:
+            self._registration = None
+            self._archive_failed(error)
+            return
+        self._registration = None
         self.flush()
         self._flusher_stopped = False
         self._flusher = gevent.spawn(self._flush_periodically)
+
+    def _archive_failed(self, error: Exception):
+        """The registration failed for good: the archive is off for this run, queued and later records are dropped, the
+        host is told through on_archive_unavailable(error) when it has the hook, otherwise the error is raised."""
+        self.archive_unavailable = True
+        self.archive_ready = False
+        dropped = len(self.archival_queue)
+        self.archival_queue.clear()
+        _log.error(f'Archive unavailable for {self.parent.name!r}: {error} ({dropped} queued records dropped; later '
+                   f'records are dropped too).')
+        hook = getattr(self.parent, 'on_archive_unavailable', None)
+        if hook is None:
+            raise error
+        hook(error)
 
     def _request_registration_by_pubsub(self, payload: Mapping) -> Mapping:
         """Publish one registration request and wait rpc_timeout seconds for the status that answers it."""
@@ -246,6 +294,11 @@ class VolttronDataManager(DataManager):
         table. Nothing is published here."""
         if records is None:
             return
+        if self.archive_unavailable:
+            if not self._unavailable_reported:
+                self._unavailable_reported = True
+                _log.error(f'Dropping archive records for {self.parent.name!r}: the archive is unavailable in this run.')
+            return
         self.archival_queue.extend(r for r in ([records] if isinstance(records, Mapping) else records)
                                    if self._accepted(r))
 
@@ -294,7 +347,11 @@ class VolttronDataManager(DataManager):
             self.flush()
 
     def stop(self):
-        """End the periodic flushing and publish what is still queued. Called when the host is torn down."""
+        """End a registration still in progress and the periodic flushing, and publish what is still queued (nothing
+        when the archive never became ready). Called when the host is torn down."""
+        registration, self._registration = self._registration, None
+        if registration is not None:
+            registration.kill()
         self._flusher_stopped = True
         flusher, self._flusher = self._flusher, None
         if flusher is not None:

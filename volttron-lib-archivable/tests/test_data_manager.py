@@ -29,6 +29,22 @@ def make_dm(host, **kwargs):
     return dm
 
 
+def complete_registration(dm):
+    """Run the registration greenlet init_archive started to its end (the fake gevent records greenlets without
+    running them; a real one is joined)."""
+    greenlet = dm._registration
+    assert greenlet is not None, 'init_archive started no registration'
+    if hasattr(greenlet, 'join'):
+        greenlet.join()
+    else:
+        greenlet.func(*greenlet.args, **greenlet.kwargs)
+
+
+def register(dm):
+    dm.init_archive()
+    complete_registration(dm)
+
+
 class FakeResult:
     def __init__(self, value):
         self.value = value
@@ -146,7 +162,7 @@ def test_records_queue_until_tables_are_registered_then_publish_as_one_batch():
     dm.archive_data([{'table_name': 'test_table', 'data': {'id': 'b', 'value': 2.0}}])
     assert agent.published == [] and len(dm.archival_queue) == 2
 
-    dm.init_archive()
+    register(dm)
 
     peer, method, args, _ = agent.vip.rpc.calls[0]
     assert (peer, method) == ('platform.historian', 'create_tables')
@@ -171,7 +187,7 @@ def test_registration_states_the_hosts_enumerations_and_needs_a_declared_schema(
     dm = make_dm(agent, historian_vip='platform.historian')
     dm.register_enumerations([Colour])
     dm.add_tables([dict(DEFINITION, columns=DEFINITION['columns'] + [{'name': 'colour', 'enumeration': 'Colour'}])])
-    dm.init_archive()
+    register(dm)
     payload = agent.vip.rpc.calls[0][2][0]
     assert payload['enumerations'] == [{'name': 'Colour', 'members': ['Red', 'Blue']}]
     assert payload['schema_version'] == 2 and [d['name'] for d in payload['definitions']] == ['test_table']
@@ -192,7 +208,7 @@ def test_historian_error_is_not_hidden():
     dm = make_dm(agent, historian_vip='platform.historian')
     dm.add_tables([DEFINITION])
     with pytest.raises(RuntimeError):
-        dm.init_archive()
+        register(dm)
     assert not dm.archive_ready and agent.published == []
 
 
@@ -213,7 +229,7 @@ def test_remote_historian_is_addressed_with_its_platform():
     agent = FakeAgent()
     dm = make_dm(agent, historian_vip='tns.historian', external_platform='central')
     dm.add_tables([DEFINITION])
-    dm.init_archive()
+    register(dm)
     peer, method, _, kwargs = agent.vip.rpc.calls[0]
     assert (peer, method, kwargs) == ('tns.historian', 'create_tables', {'external_platform': 'central'})
     assert dm.historian_address == 'tns.historian@central'
@@ -223,7 +239,7 @@ def test_local_historian_is_called_without_a_platform():
     agent = FakeAgent()
     dm = make_dm(agent, historian_vip='platform.historian')
     dm.add_tables([DEFINITION])
-    dm.init_archive()
+    register(dm)
     assert agent.vip.rpc.calls[0][3] == {}
 
 
@@ -236,7 +252,7 @@ def test_unanswered_registration_is_retried_until_the_historian_answers(monkeypa
     dm = make_dm(agent, historian_vip='tns.historian', external_platform='central', rpc_retry_period=7,
                              rpc_total_timeout=600)
     dm.add_tables([DEFINITION])
-    dm.init_archive()
+    register(dm)
     assert len(agent.vip.rpc.calls) == 3 and sleeps == [7, 7]
     assert dm.archive_ready
 
@@ -251,7 +267,7 @@ def test_registration_gives_up_after_the_total_timeout(monkeypatch):
     dm = make_dm(agent, historian_vip='tns.historian', rpc_retry_period=10, rpc_total_timeout=25)
     dm.add_tables([DEFINITION])
     with pytest.raises(RuntimeError, match='did not answer the table registration'):
-        dm.init_archive()
+        register(dm)
     assert len(agent.vip.rpc.calls) == 4, 'attempts at t=0, 10, 20 and the one that finds the deadline passed'
     assert not dm.archive_ready
 
@@ -261,7 +277,7 @@ def test_rejected_definition_is_not_retried():
     dm = make_dm(agent, historian_vip='tns.historian', rpc_retry_period=1)
     dm.add_tables([DEFINITION])
     with pytest.raises(RuntimeError, match='did not register'):
-        dm.init_archive()
+        register(dm)
     assert len(agent.vip.rpc.calls) == 1
 
 
@@ -281,7 +297,7 @@ def test_rpc_path_accepts_the_full_status_shape_and_does_not_subscribe():
     dm = make_dm(agent, historian_vip='tns.historian')
     dm.add_tables([DEFINITION])
     dm.archive_data(record('test_table', 'a'))
-    dm.init_archive()
+    register(dm)
     assert dm.archive_ready and agent.subscriptions == [] and agent.definitions_published() == []
     assert agent.records_published() == [[record('test_table', 'a')]]
 
@@ -292,7 +308,7 @@ def test_rpc_partial_registers_and_drops_records_for_rejected_tables(caplog):
     dm.add_tables([DEFINITION, OTHER])
     dm.archive_data([record('test_table', 'a'), record('other_table', 'x')])
     with caplog.at_level(logging.ERROR, logger='volttron_archivable.data_manager'):
-        dm.init_archive()
+        register(dm)
         dm.archive_data([record('other_table', 'y'), record('test_table', 'b'), record('other_table', 'z')])
         dm.flush()
     assert dm.archive_ready and set(dm.rejected_tables) == {'other_table'}
@@ -308,7 +324,7 @@ def test_rpc_error_reply_raises_with_the_details():
     dm.add_tables([DEFINITION])
     dm.archive_data(record('test_table', 'a'))
     with pytest.raises(RuntimeError, match="bad types.*no such type"):
-        dm.init_archive()
+        register(dm)
     assert not dm.archive_ready and agent.published == []
 
 
@@ -323,7 +339,7 @@ def test_schema_version_refusal_raises_naming_both_versions():
     dm.add_tables([DEFINITION])
     dm.archive_data(record('test_table', 'a'))
     with pytest.raises(RuntimeError) as error:
-        dm.init_archive()
+        register(dm)
     message = str(error.value)
     assert f'version {ARCHIVE_SCHEMA_VERSION + 1}' in message and f'version {ARCHIVE_SCHEMA_VERSION}' in message
     assert 'Nothing was registered' in message
@@ -336,7 +352,7 @@ def test_historians_schema_version_is_logged_on_success(caplog):
     dm = make_dm(agent, historian_vip='tns.historian')
     dm.add_tables([DEFINITION])
     with caplog.at_level(logging.INFO, logger='volttron_archivable.data_manager'):
-        dm.init_archive()
+        register(dm)
     assert any(f'writes archive schema version {ARCHIVE_SCHEMA_VERSION}' in r.getMessage() for r in caplog.records)
 
 
@@ -344,7 +360,7 @@ def test_only_records_without_rejected_tables_are_published_when_a_batch_is_all_
     agent = FakeAgent(reply=partial_for({'request_id': None, 'publisher': 'Campus', 'definitions': []}))
     dm = make_dm(agent, historian_vip='tns.historian')
     dm.add_tables([DEFINITION, OTHER])
-    dm.init_archive()
+    register(dm)
     dm.archive_data([record('other_table', 'x')])
     dm.flush()
     assert agent.records_published() == [], 'no empty batch goes out'
@@ -365,7 +381,7 @@ def test_pubsub_success_subscribes_everywhere_publishes_definitions_and_flushes(
     agent = FakeAgent(historian=success_for)
     dm = make_pubsub_dm(agent)
     dm.archive_data(record('test_table', 'a'))
-    dm.init_archive()
+    register(dm)
 
     assert agent.subscriptions == [('archive_status', dm._receive_status, True)]
     assert agent.vip.rpc.calls == [], 'no RPC on the pubsub path'
@@ -382,7 +398,7 @@ def test_pubsub_partial_and_error_follow_the_same_rules_as_rpc(caplog):
     agent = FakeAgent(historian=partial_for)
     dm = make_pubsub_dm(agent)
     with caplog.at_level(logging.ERROR, logger='volttron_archivable.data_manager'):
-        dm.init_archive()
+        register(dm)
         dm.archive_data([record('other_table', 'x'), record('test_table', 'a')])
         dm.flush()
     assert dm.archive_ready and set(dm.rejected_tables) == {'other_table'}
@@ -392,7 +408,7 @@ def test_pubsub_partial_and_error_follow_the_same_rules_as_rpc(caplog):
     agent = FakeAgent(historian=error_for)
     dm = make_pubsub_dm(agent)
     with pytest.raises(RuntimeError, match='bad types'):
-        dm.init_archive()
+        register(dm)
     assert not dm.archive_ready and agent.records_published() == []
 
 
@@ -416,7 +432,7 @@ def test_pubsub_retries_with_a_new_request_id_and_ignores_answers_to_other_reque
     agent = FakeAgent(historian=historian)
     dm = make_pubsub_dm(agent, rpc_retry_period=7, rpc_total_timeout=600)
     with caplog.at_level(logging.DEBUG, logger='volttron_archivable.data_manager'):
-        dm.init_archive()
+        register(dm)
     requests = agent.definitions_published()
     assert len(requests) == 3 and len({r['request_id'] for r in requests}) == 3, 'a fresh id on every attempt'
     assert sleeps == [7, 7]
@@ -434,7 +450,7 @@ def test_pubsub_gives_up_after_the_total_timeout(monkeypatch):
     agent = FakeAgent(historian=lambda message: None)
     dm = make_pubsub_dm(agent, rpc_retry_period=10, rpc_total_timeout=25)
     with pytest.raises(RuntimeError, match='did not answer the table registration'):
-        dm.init_archive()
+        register(dm)
     assert len(agent.definitions_published()) == 4 and not dm.archive_ready
 
 
@@ -443,7 +459,7 @@ def test_status_that_is_not_a_mapping_is_ignored(caplog):
     dm = make_pubsub_dm(agent, rpc_retry_period=1, rpc_total_timeout=0)
     with pytest.raises(RuntimeError):
         with caplog.at_level(logging.WARNING, logger='volttron_archivable.data_manager'):
-            dm.init_archive()
+            register(dm)
     assert any('not a mapping' in r.getMessage() for r in caplog.records)
 
 
@@ -454,7 +470,7 @@ def test_status_that_is_not_a_mapping_is_ignored(caplog):
 def ready_dm(agent, **kwargs):
     dm = make_dm(agent, historian_vip='tns.historian', **kwargs)
     dm.add_tables([DEFINITION])
-    dm.init_archive()
+    register(dm)
     return dm
 
 
@@ -498,7 +514,7 @@ def test_nothing_is_published_before_ready_and_the_backlog_goes_out_once_on_init
     dm.archive_data([record('test_table', 'a'), record('test_table', 'b')])
     dm.flush()
     assert agent.records_published() == [], 'flush before the historian has the tables publishes nothing'
-    dm.init_archive()
+    register(dm)
     assert agent.records_published() == [[record('test_table', 'a'), record('test_table', 'b')]]
     assert dm._flusher is not None and dm._flusher.func == dm._flush_periodically, 'the flusher greenlet is started'
 
@@ -593,3 +609,99 @@ def test_unserialisable_records_are_dropped_not_requeued(caplog):
     assert len(errors) == 1 and errors[0].exc_info is not None and 'dropped' in errors[0].getMessage()
     assert "test_table('bad')" in errors[0].getMessage(), 'the dropped records are named'
 
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Registration does not hold the host
+# ----------------------------------------------------------------------------------------------------------------------
+
+class HostWithHook(FakeAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.unavailable = []
+
+    def on_archive_unavailable(self, error):
+        self.unavailable.append(error)
+
+
+def test_init_archive_returns_before_the_historian_has_answered():
+    agent = FakeAgent()
+    dm = make_dm(agent, historian_vip='tns.historian')
+    dm.add_tables([DEFINITION])
+    dm.init_archive()
+    assert agent.vip.rpc.calls == [] and not dm.archive_ready and dm._flusher is None, 'nothing happened yet'
+    assert dm._registration is not None and dm._registration.func == dm._register
+    complete_registration(dm)
+    assert dm.archive_ready and len(agent.vip.rpc.calls) == 1 and dm._registration is None
+    assert dm._flusher is not None, 'the flusher starts only once the reply is applied'
+
+
+def test_records_archived_during_the_registration_queue_and_flush_after_it():
+    agent = FakeAgent()
+    dm = make_dm(agent, historian_vip='tns.historian')
+    dm.add_tables([DEFINITION])
+    dm.archive_data(record('test_table', 'before'))
+    dm.init_archive()
+    dm.archive_data([record('test_table', 'during-1'), record('test_table', 'during-2')])
+    dm.flush()
+    assert agent.records_published() == [], 'no flush before the reply'
+    assert [r['data']['id'] for r in dm.archival_queue] == ['before', 'during-1', 'during-2']
+    complete_registration(dm)
+    assert agent.records_published() == [[record('test_table', i) for i in ('before', 'during-1', 'during-2')]]
+
+
+def test_exhausted_registration_calls_the_hosts_hook_and_turns_the_archive_off(monkeypatch, caplog):
+    import volttron_archivable.data_manager as module
+    clock = {'now': 0.0}
+    monkeypatch.setattr(module.gevent, 'sleep', lambda seconds: clock.__setitem__('now', clock['now'] + seconds))
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock['now'])
+    agent = HostWithHook()
+    agent.vip.rpc = FlakyRpc({'status': 'success'}, failures=100)
+    dm = make_dm(agent, historian_vip='tns.historian', rpc_retry_period=10, rpc_total_timeout=25)
+    dm.add_tables([DEFINITION])
+    dm.archive_data(record('test_table', 'queued'))
+    with caplog.at_level(logging.ERROR, logger='volttron_archivable.data_manager'):
+        register(dm)  # does not raise: the host has the hook
+    (error,) = agent.unavailable
+    assert isinstance(error, RuntimeError) and '4 attempts' in str(error) and dm.registration_attempts == 4
+    assert dm.archive_unavailable and not dm.archive_ready and dm._flusher is None and len(dm.archival_queue) == 0
+    assert any('Archive unavailable' in r.getMessage() and '1 queued records dropped' in r.getMessage()
+               for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger='volttron_archivable.data_manager'):
+        dm.archive_data(record('test_table', 'later'))
+        dm.archive_data(record('test_table', 'later-2'))
+    assert len(dm.archival_queue) == 0 and len(caplog.records) == 1, 'later records are dropped, reported once'
+
+
+def test_error_status_reaches_the_hook_too_and_the_hookless_host_sees_it_raised():
+    agent = HostWithHook(reply=error_for({'request_id': None, 'publisher': 'Campus', 'definitions': []}))
+    dm = make_dm(agent, historian_vip='tns.historian')
+    dm.add_tables([DEFINITION])
+    register(dm)
+    assert len(agent.unavailable) == 1 and 'bad types' in str(agent.unavailable[0]) and dm.archive_unavailable
+    agent = FakeAgent(reply=error_for({'request_id': None, 'publisher': 'Campus', 'definitions': []}))
+    dm = make_dm(agent, historian_vip='tns.historian')
+    dm.add_tables([DEFINITION])
+    with pytest.raises(RuntimeError, match='bad types'):
+        register(dm)
+    assert dm.archive_unavailable
+
+
+def test_stop_during_a_registration_kills_it_and_publishes_nothing():
+    agent = FakeAgent()
+    dm = make_dm(agent, historian_vip='tns.historian')
+    dm.add_tables([DEFINITION])
+    dm.archive_data(record('test_table', 'a'))
+    dm.init_archive()
+    registration = dm._registration
+    dm.stop()
+    assert registration.dead and dm._registration is None and agent.records_published() == []
+
+
+def test_rpc_timeout_defaults_to_the_path():
+    assert make_dm(FakeAgent(), historian_vip='h').rpc_timeout == 30.0
+    assert make_dm(FakeAgent(), historian_vip='h', registration='pubsub').rpc_timeout == 10.0
+    assert make_dm(FakeAgent(), historian_vip='h', registration='pubsub', rpc_timeout=4).rpc_timeout == 4.0
+    with pytest.raises(ValueError):
+        make_dm(FakeAgent(), historian_vip='h', rpc_timeout=0)
